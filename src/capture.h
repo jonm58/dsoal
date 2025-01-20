@@ -2,6 +2,7 @@
 #define CAPTURE_H
 
 #include <atomic>
+#include <mutex>
 
 #include <dsound.h>
 
@@ -9,7 +10,7 @@
 
 
 class DSCapture final : IDirectSoundCapture {
-    DSCapture(bool is8);
+    explicit DSCapture(bool is8);
     ~DSCapture();
 
     class Unknown final : IUnknown {
@@ -36,15 +37,27 @@ class DSCapture final : IDirectSoundCapture {
 
     std::atomic<ULONG> mTotalRef{1u}, mDsRef{1u}, mUnkRef{0u};
 
+    std::mutex mMutex;
+    std::string mDeviceName;
     bool mIs8{};
 
 public:
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) noexcept override;
     ULONG STDMETHODCALLTYPE AddRef() noexcept override;
     ULONG STDMETHODCALLTYPE Release() noexcept override;
-    HRESULT STDMETHODCALLTYPE CreateCaptureBuffer(const DSCBUFFERDESC *dscBufferDesc, IDirectSoundCaptureBuffer **dsCaptureBuffer, IUnknown *unk) noexcept override;
+    HRESULT STDMETHODCALLTYPE CreateCaptureBuffer(const DSCBUFFERDESC *dscBufferDesc,
+        IDirectSoundCaptureBuffer **dsCaptureBuffer, IUnknown *outer) noexcept override;
     HRESULT STDMETHODCALLTYPE GetCaps(DSCCAPS *dscCaps) noexcept override;
     HRESULT STDMETHODCALLTYPE Initialize(const GUID *guid) noexcept override;
+
+    [[nodiscard]]
+    auto getLockGuard() { return std::lock_guard{mMutex}; }
+
+    [[nodiscard]]
+    auto getUniqueLock() { return std::unique_lock{mMutex}; }
+
+    [[nodiscard]]
+    auto getName() const noexcept -> const std::string& { return mDeviceName; }
 
     template<typename T> [[nodiscard]]
     T as() noexcept { return static_cast<T>(this); }
