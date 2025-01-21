@@ -98,6 +98,12 @@ public:
     HRESULT STDMETHODCALLTYPE GetObjectInPath(REFGUID rguidObject, DWORD dwIndex, REFGUID rguidInterface, LPVOID *ppObject) noexcept override;
     HRESULT STDMETHODCALLTYPE GetFXStatus(DWORD dwFXCount, LPDWORD pdwFXStatus) noexcept override;
 
+    void finalize() noexcept
+    {
+        if(mTotalRef.fetch_sub(1u, std::memory_order_relaxed) == 1) [[unlikely]]
+            delete this;
+    }
+
     template<typename T>
     T as() noexcept { return static_cast<T>(this); }
 
@@ -211,8 +217,7 @@ ULONG STDMETHODCALLTYPE DSCBuffer::Release() noexcept
 {
     const auto ret = mDsRef.fetch_sub(1u, std::memory_order_relaxed) - 1;
     DEBUG(CLASS_PREFIX "Release ({}) ref {}", voidp{this}, ret);
-    if(mTotalRef.fetch_sub(1u, std::memory_order_relaxed) == 1)
-        delete this;
+    finalize();
     return ret;
 }
 
@@ -615,21 +620,22 @@ HRESULT STDMETHODCALLTYPE DSCBuffer::Stop() noexcept
 {
     TRACE(PREFIX "({})->()", voidp{this});
 
+    auto lock = mParent.getUniqueLock();
     if(mCapturing)
     {
         alcCaptureStop(mDevice);
-        std::ignore = mParent.getLockGuard();
-        mQuitNow = true;
+        lock.unlock();
+        mQuitNow.store(true, std::memory_order_release);
         mCaptureThread.join();
-        mCapturing = false;
+        lock.lock();
 
         static constexpr auto trigger_notify = [](const DSBPOSITIONNOTIFY &notify)
         {
             if(notify.dwOffset == static_cast<DWORD>(DSCBPN_OFFSET_STOP))
                 SetEvent(notify.hEventNotify);
         };
-        auto lock = mParent.getLockGuard();
         std::for_each(mNotifies.cbegin(), mNotifies.cend(), trigger_notify);
+        mCapturing = false;
     }
 
     return DS_OK;
@@ -716,8 +722,7 @@ ULONG STDMETHODCALLTYPE DSCBuffer::Notify::Release() noexcept
     auto *self = impl_from_base();
     const auto ret = self->mDsRef.fetch_sub(1u, std::memory_order_relaxed) - 1;
     DEBUG(CLASS_PREFIX "Release ({}) ref {}", voidp{this}, ret);
-    if(self->mTotalRef.fetch_sub(1u, std::memory_order_relaxed) == 1)
-        delete this;
+    self->finalize();
     return ret;
 }
 
@@ -818,8 +823,7 @@ ULONG STDMETHODCALLTYPE DSCapture::Release() noexcept
 {
     const auto ret = mDsRef.fetch_sub(1u, std::memory_order_relaxed) - 1;
     DEBUG(PREFIX "({}) ref {}", voidp{this}, ret);
-    if(mTotalRef.fetch_sub(1u, std::memory_order_relaxed) == 1u) UNLIKELY
-        delete this;
+    finalize();
     return ret;
 }
 #undef PREFIX
@@ -963,8 +967,7 @@ ULONG STDMETHODCALLTYPE DSCapture::Unknown::Release() noexcept
     auto self = impl_from_base();
     const auto ret = self->mUnkRef.fetch_sub(1u, std::memory_order_relaxed) - 1;
     DEBUG(PREFIX "({}) ref {}", voidp{this}, ret);
-    if(self->mTotalRef.fetch_sub(1u, std::memory_order_relaxed) == 1u) UNLIKELY
-        delete self;
+    self->finalize();
     return ret;
 }
 #undef PREFIX
