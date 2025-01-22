@@ -411,11 +411,11 @@ Buffer::Buffer(DSound8OAL &parent, bool is8, IDirectSoundBuffer *original) noexc
 
 Buffer::~Buffer()
 {
-    if(mSource != 0)
+    if(const auto srcid = std::exchange(mSource, 0))
     {
-        alDeleteSourcesDirect(mContext, 1, &mSource);
+        alDeleteSourcesDirect(mContext, 1, &srcid);
         alGetErrorDirect(mContext);
-        mSource = 0;
+
         if(mLocStatus == LocStatus::Hardware)
             mParent.getShared().decHwSources();
         else if(mLocStatus == LocStatus::Software)
@@ -487,10 +487,9 @@ HRESULT Buffer::setLocation(LocStatus locStatus) noexcept
     /* If we have a source, we're changing location, so return the source we
      * have to get a new one.
      */
-    if(mSource != 0)
+    if(const auto srcid = std::exchange(mSource, 0))
     {
-        alDeleteSourcesDirect(mContext, 1, &mSource);
-        mSource = 0;
+        alDeleteSourcesDirect(mContext, 1, &srcid);
         alGetErrorDirect(mContext);
 
         if(mLocStatus == LocStatus::Hardware)
@@ -574,8 +573,10 @@ HRESULT Buffer::setLocation(LocStatus locStatus) noexcept
         if(mParent.haveExtension(EXT_EAX))
         {
             static std::array<GUID,EAX40_MAX_ACTIVE_FXSLOTS> NullSlots{};
+
+            const auto slots = std::as_writable_bytes(std::span{NullSlots});
             EAXSetDirect(mContext, &EAXPROPERTYID_EAX40_Source, EAXSOURCE_ACTIVEFXSLOTID, mSource,
-                NullSlots.data(), NullSlots.size()*sizeof(GUID));
+                slots.data(), slots.size());
         }
     }
     alGetErrorDirect(mContext);
@@ -1125,7 +1126,7 @@ HRESULT STDMETHODCALLTYPE Buffer::SetPan(LONG pan) noexcept
     {
         if(mParent.haveExtension(SOFT_SOURCE_PANNING))
         {
-            const auto panf = (mPan <= 0) ? (mB_to_gain(pan)-1.0f) : (1.0f-mB_to_gain(-pan));
+            const auto panf = (pan <= 0) ? (mB_to_gain(pan)-1.0f) : (1.0f-mB_to_gain(-pan));
             alSourcefDirect(mContext, mSource, AL_PAN_SOFT, panf);
         }
     }

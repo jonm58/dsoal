@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <thread>
 #include <utility>
@@ -20,6 +21,14 @@ using cvoidp = const void*;
 #ifndef DSCBPN_OFFSET_STOP
 #define DSCBPN_OFFSET_STOP          0xffffffff
 #endif
+
+template<typename T>
+struct CoTaskMemDeleter {
+    void operator()(T *mem) const { CoTaskMemFree(mem); }
+};
+template<typename T>
+using CoTaskMemPtr = std::unique_ptr<T,CoTaskMemDeleter<T>>;
+
 
 class DSCBuffer final : IDirectSoundCaptureBuffer8 {
     explicit DSCBuffer(DSCapture &parent, bool is8) : mIs8{is8}, mParent{parent} { }
@@ -54,7 +63,6 @@ class DSCBuffer final : IDirectSoundCaptureBuffer8 {
     std::atomic<ULONG> mTotalRef{1u}, mDsRef{1u}, mNotRef{0u};
 
     bool mIs8{};
-    bool mLocked{};
     bool mCapturing{};
 
     DSCapture &mParent;
@@ -64,6 +72,7 @@ class DSCBuffer final : IDirectSoundCaptureBuffer8 {
     std::vector<DSBPOSITIONNOTIFY> mNotifies;
     std::vector<std::byte> mBuffer;
     std::atomic<DWORD> mWritePos{0u};
+    std::atomic<bool> mLocked{false};
     std::atomic<bool> mQuitNow{false};
 
 public:
@@ -346,6 +355,12 @@ HRESULT STDMETHODCALLTYPE DSCBuffer::Initialize(LPDIRECTSOUNDCAPTURE lpDSC,
     auto *format = lpcDSCBDesc->lpwfxFormat;
     if(format->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
     {
+        if(format->cbSize < sizeof(WAVEFORMATEXTENSIBLE)-sizeof(WAVEFORMATEX))
+            return DSERR_INVALIDPARAM;
+        if(format->cbSize > sizeof(WAVEFORMATEXTENSIBLE)-sizeof(WAVEFORMATEX)
+            && format->cbSize != sizeof(WAVEFORMATEXTENSIBLE))
+            return DSERR_CONTROLUNAVAIL;
+
         auto *wfe = CONTAINING_RECORD(format, const WAVEFORMATEXTENSIBLE, Format);
         /* NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) */
         TRACE(PREFIX "Requested capture format:\n"
@@ -447,12 +462,6 @@ HRESULT STDMETHODCALLTYPE DSCBuffer::Initialize(LPDIRECTSOUNDCAPTURE lpDSC,
     }
     else if(format->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
     {
-        if(format->cbSize < sizeof(WAVEFORMATEXTENSIBLE)-sizeof(WAVEFORMATEX))
-            return DSERR_INVALIDPARAM;
-        if(format->cbSize > sizeof(WAVEFORMATEXTENSIBLE)-sizeof(WAVEFORMATEX)
-            && format->cbSize != sizeof(WAVEFORMATEXTENSIBLE))
-            return DSERR_CONTROLUNAVAIL;
-
         /* NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) */
         auto *wfe = CONTAINING_RECORD(format, const WAVEFORMATEXTENSIBLE, Format);
         if(wfe->SubFormat != KSDATAFORMAT_SUBTYPE_PCM)
@@ -556,7 +565,12 @@ HRESULT STDMETHODCALLTYPE DSCBuffer::Lock(DWORD dwReadCusor, DWORD dwReadBytes,
         return DSERR_INVALIDPARAM;
     }
 
-    auto lock = mParent.getLockGuard();
+    if(dwReadCusor > mBuffer.size())
+    {
+        WARN(PREFIX "Invalid read pos: {} > {}", dwReadCusor, mBuffer.size());
+        return DSERR_INVALIDPARAM;
+    }
+
     if((dwFlags&DSCBLOCK_ENTIREBUFFER))
         dwReadBytes = static_cast<DWORD>(mBuffer.size());
     else if(dwReadBytes > mBuffer.size())
@@ -565,7 +579,7 @@ HRESULT STDMETHODCALLTYPE DSCBuffer::Lock(DWORD dwReadCusor, DWORD dwReadBytes,
         return DSERR_INVALIDPARAM;
     }
 
-    if(std::exchange(mLocked, true))
+    if(mLocked.exchange(true, std::memory_order_relaxed))
     {
         WARN(PREFIX "Already locked");
         return DSERR_INVALIDPARAM;
@@ -579,7 +593,7 @@ HRESULT STDMETHODCALLTYPE DSCBuffer::Lock(DWORD dwReadCusor, DWORD dwReadBytes,
     }
     else
         *lpdwAudioBytes1 = dwReadBytes;
-    *lplpvAudioPtr1 = &mBuffer[dwReadCusor];
+    *lplpvAudioPtr1 = std::to_address(mBuffer.begin() + ptrdiff_t(dwReadCusor));
 
     if(lplpvAudioPtr2 && lpdwAudioBytes2 && remain)
     {
@@ -649,8 +663,7 @@ HRESULT STDMETHODCALLTYPE DSCBuffer::Unlock(LPVOID lpvAudioPtr1, DWORD dwAudioBy
     DEBUG(PREFIX "({})->({}, {}, {}, {})", voidp{this}, voidp{lpvAudioPtr1}, dwAudioBytes1,
         voidp{lpvAudioPtr2}, dwAudioBytes2);
 
-    auto lock = mParent.getLockGuard();
-    if(!std::exchange(mLocked, false))
+    if(!mLocked.exchange(false, std::memory_order_relaxed))
     {
         WARN(PREFIX "Not locked");
         return DSERR_INVALIDPARAM;
@@ -720,7 +733,7 @@ ULONG STDMETHODCALLTYPE DSCBuffer::Notify::AddRef() noexcept
 ULONG STDMETHODCALLTYPE DSCBuffer::Notify::Release() noexcept
 {
     auto *self = impl_from_base();
-    const auto ret = self->mDsRef.fetch_sub(1u, std::memory_order_relaxed) - 1;
+    const auto ret = self->mNotRef.fetch_sub(1u, std::memory_order_relaxed) - 1;
     DEBUG(CLASS_PREFIX "Release ({}) ref {}", voidp{this}, ret);
     self->finalize();
     return ret;
@@ -924,21 +937,25 @@ HRESULT STDMETHODCALLTYPE DSCapture::Initialize(const GUID *guid) noexcept
         return DSERR_NODRIVER;
 
     auto devguid = GUID{};
-    auto hr = GetDeviceID(*guid, devguid);
-    if(FAILED(hr)) return hr;
+    if(const auto hr = GetDeviceID(*guid, devguid); FAILED(hr))
+        return hr;
 
+    mDeviceName = std::invoke([guid]() -> std::string
     {
-        auto guid_str = LPOLESTR{};
-        hr = StringFromCLSID(devguid, &guid_str);
-        if(FAILED(hr))
-        {
-            ERR(PREFIX "Failed to convert GUID to string\n");
-            return hr;
+        try {
+            auto guid_str = CoTaskMemPtr<OLECHAR>{};
+            const auto hr = StringFromCLSID(*guid, ds::out_ptr(guid_str));
+            if(SUCCEEDED(hr)) return wstr_to_utf8(guid_str.get());
+
+            ERR(PREFIX "StringFromCLSID failed: {:#x}", hr);
         }
-        mDeviceName = wstr_to_utf8(guid_str);
-        CoTaskMemFree(guid_str);
-        guid_str = nullptr;
-    }
+        catch(std::exception &e) {
+            ERR(PREFIX "Exception converting GUID to string: {}", e.what());
+        }
+        return std::string{};
+    });
+    if(mDeviceName.empty())
+        return DSERR_OUTOFMEMORY;
 
     return DS_OK;
 }
