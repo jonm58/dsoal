@@ -19,7 +19,7 @@ env:
 jobs:
   Build:
     name: ${{matrix.config.name}}
-    runs-on: windows-latest
+    runs-on: windows-2025
     strategy:
       matrix:
         config:
@@ -104,7 +104,7 @@ jobs:
         echo "${{env.OpenALSoftCommitDate}}" >>                                                                "DSOAL/Documentation/OpenALSoft-Version.txt"
 
     - name: Upload artifact to GitHub actions
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v4.6.2
       with:
         name: DSOAL_v${{env.DSOALCommitTag}}-${{env.DSOALCommitHashShort}}+OpenALSoft_v${{env.OpenALSoftCommitTag}}-${{env.OpenALSoftCommitHashShort}}-${{matrix.config.name}}
         path: DSOAL/
