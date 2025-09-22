@@ -7,14 +7,12 @@
 #include <cstdlib>
 #include <deque>
 #include <mutex>
+#include <vector>
 
 #include <dsound.h>
 #include <mmdeviceapi.h>
 #include <mmreg.h>
 
-#include "AL/al.h"
-#include "AL/alc.h"
-#include "AL/alext.h"
 #include "capture.h"
 #include "comhelpers.h"
 #include "comptr.h"
@@ -32,6 +30,7 @@ namespace {
 
 using voidp = void*;
 using cvoidp = const void*;
+
 
 HMODULE gOpenalHandle{};
 
@@ -197,14 +196,15 @@ auto wstr_to_utf8(std::wstring_view wstr) -> std::string
 {
     auto ret = std::string{};
 
+    const auto u16len = ds::saturate_cast<int>(wstr.size());
     /* NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) */
-    const auto len = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), ds::sizei(wstr), nullptr, 0,
-        nullptr, nullptr);
-    if(len > 0)
+    const auto u8len = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), u16len, nullptr, 0, nullptr,
+        nullptr);
+    if(u8len > 0)
     {
-        ret.resize(static_cast<size_t>(len));
+        ret.resize(static_cast<size_t>(u8len));
         /* NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) */
-        WideCharToMultiByte(CP_UTF8, 0, wstr.data(), ds::sizei(wstr), ret.data(), len, nullptr,
+        WideCharToMultiByte(CP_UTF8, 0, wstr.data(), u16len, ret.data(), u8len, nullptr,
             nullptr);
     }
 
@@ -215,13 +215,14 @@ auto utf8_to_wstr(std::string_view str) -> std::wstring
 {
     auto ret = std::wstring{};
 
+    const auto u8len = ds::saturate_cast<int>(str.size());
     /* NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) */
-    const auto len = MultiByteToWideChar(CP_UTF8, 0, str.data(), ds::sizei(str), nullptr, 0);
-    if(len > 0)
+    const auto u16len = MultiByteToWideChar(CP_UTF8, 0, str.data(), u8len, nullptr, 0);
+    if(u16len > 0)
     {
-        ret.resize(static_cast<size_t>(len));
+        ret.resize(static_cast<size_t>(u16len));
         /* NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) */
-        MultiByteToWideChar(CP_UTF8, 0, str.data(), ds::sizei(str), ret.data(), len);
+        MultiByteToWideChar(CP_UTF8, 0, str.data(), u8len, ret.data(), u16len);
     }
 
     return ret;
@@ -393,9 +394,9 @@ DSOAL_EXPORT BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, void *reserve
     case DLL_PROCESS_ATTACH:
         if(const WCHAR *wstr{_wgetenv(L"DSOAL_LOGFILE")}; wstr && *wstr != 0)
         {
-            gsl::owner<FILE*> f{_wfopen(wstr, L"wt")};
-            if(!f) ERR("Failed to open log file {}", wstr_to_utf8(wstr));
-            else gLogFile = f;
+            gLogFile.open(wstr);
+            if(!gLogFile.is_open())
+                ERR("Failed to open log file {}", wstr_to_utf8(wstr));
         }
 
         if(const char *str{std::getenv("DSOAL_LOGLEVEL")}; str && *str != 0)
@@ -419,21 +420,17 @@ DSOAL_EXPORT BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD reason, void *reserve
             DSOAL_GIT_BRANCH);
         if(!load_openal())
         {
-            if(gLogFile)
-                fclose(gLogFile);
-            gLogFile = nullptr;
+            gLogFile.close();
             return FALSE;
         }
 
         /* Increase refcount on dsound by 1 */
         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+            /* NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) */
             reinterpret_cast<LPCWSTR>(hInstDLL), &hInstDLL);
         break;
 
     case DLL_PROCESS_DETACH:
-        if(gLogFile)
-            fclose(gLogFile);
-        gLogFile = nullptr;
         break;
     }
 
@@ -641,22 +638,21 @@ HRESULT WINAPI DSOAL_DirectSoundFullDuplexCreate(const GUID *captureDevice,
 #define PREFIX "DirectSoundEnumerateA "
 HRESULT WINAPI DSOAL_DirectSoundEnumerateA(LPDSENUMCALLBACKA callback, void *userPtr) noexcept
 {
-    TRACE("({}, {})", reinterpret_cast<void*>(callback), userPtr);
+    TRACE("({}, {})", std::bit_cast<void*>(callback), userPtr);
 
-    auto do_enum = [callback,userPtr](GUID *guid, const WCHAR *drvname, const WCHAR *devname)
+    auto do_enum = [=](GUID *guid, const WCHAR *dname, const WCHAR *mname)
     {
-        const auto dlen = WideCharToMultiByte(CP_ACP, 0, drvname, -1, nullptr, 0, nullptr, nullptr);
-        const auto mlen = WideCharToMultiByte(CP_ACP, 0, devname, -1, nullptr, 0, nullptr, nullptr);
+        auto const dlen = WideCharToMultiByte(CP_ACP, 0, dname, -1, nullptr, 0, nullptr, nullptr);
+        auto const mlen = WideCharToMultiByte(CP_ACP, 0, mname, -1, nullptr, 0, nullptr, nullptr);
         if(dlen < 0 || mlen < 0) return false;
 
-        auto descA = std::make_unique<char[]>(static_cast<size_t>(dlen+mlen)+2);
-        if(!descA) return false;
-        char *modA = descA.get() + dlen+1;
+        auto descA = std::vector<char>(static_cast<size_t>(dlen+mlen)+2, '\0');
+        auto *modA = std::to_address(descA.begin() + dlen+1);
 
-        WideCharToMultiByte(CP_ACP, 0, drvname, -1, descA.get(), dlen, nullptr, nullptr);
-        WideCharToMultiByte(CP_ACP, 0, devname, -1, modA, mlen, nullptr, nullptr);
+        WideCharToMultiByte(CP_ACP, 0, dname, -1, descA.data(), dlen, nullptr, nullptr);
+        WideCharToMultiByte(CP_ACP, 0, mname, -1, modA, mlen, nullptr, nullptr);
 
-        return callback(guid, descA.get(), modA, userPtr) != FALSE;
+        return callback(guid, descA.data(), modA, userPtr) != FALSE;
     };
 
     std::lock_guard listlock{gDeviceListMutex};
@@ -667,10 +663,10 @@ HRESULT WINAPI DSOAL_DirectSoundEnumerateA(LPDSENUMCALLBACKA callback, void *use
 #define PREFIX "DirectSoundEnumerateW "
 HRESULT WINAPI DSOAL_DirectSoundEnumerateW(LPDSENUMCALLBACKW callback, void *userPtr) noexcept
 {
-    TRACE("({}, {})", reinterpret_cast<void*>(callback), userPtr);
+    TRACE("({}, {})", std::bit_cast<void*>(callback), userPtr);
 
-    auto do_enum = [callback,userPtr](GUID *guid, const WCHAR *drvname, const WCHAR *devname)
-    { return callback(guid, drvname, devname, userPtr) != FALSE; };
+    auto do_enum = [callback,userPtr](GUID *guid, const WCHAR *dname, const WCHAR *mname)
+    { return callback(guid, dname, mname, userPtr) != FALSE; };
 
     std::lock_guard listlock{gDeviceListMutex};
     return enumerate_mmdev(eRender, gPlaybackDevices, do_enum);
@@ -680,22 +676,21 @@ HRESULT WINAPI DSOAL_DirectSoundEnumerateW(LPDSENUMCALLBACKW callback, void *use
 #define PREFIX "DirectSoundCaptureenumerateA "
 HRESULT WINAPI DSOAL_DirectSoundCaptureEnumerateA(LPDSENUMCALLBACKA callback, void *userPtr) noexcept
 {
-    TRACE("({}, {})", reinterpret_cast<void*>(callback), userPtr);
+    TRACE("({}, {})", std::bit_cast<void*>(callback), userPtr);
 
-    auto do_enum = [callback,userPtr](GUID *guid, const WCHAR *drvname, const WCHAR *devname)
+    auto do_enum = [=](GUID *guid, const WCHAR *dname, const WCHAR *mname)
     {
-        const auto dlen = WideCharToMultiByte(CP_ACP, 0, drvname, -1, nullptr, 0, nullptr, nullptr);
-        const auto mlen = WideCharToMultiByte(CP_ACP, 0, devname, -1, nullptr, 0, nullptr, nullptr);
+        auto const dlen = WideCharToMultiByte(CP_ACP, 0, dname, -1, nullptr, 0, nullptr, nullptr);
+        auto const mlen = WideCharToMultiByte(CP_ACP, 0, mname, -1, nullptr, 0, nullptr, nullptr);
         if(dlen < 0 || mlen < 0) return false;
 
-        auto descA = std::make_unique<char[]>(static_cast<size_t>(dlen+mlen)+2);
-        if(!descA) return false;
-        char *modA = descA.get() + dlen+1;
+        auto descA = std::vector<char>(static_cast<size_t>(dlen+mlen)+2, '\0');
+        auto *modA = std::to_address(descA.begin() + dlen+1);
 
-        WideCharToMultiByte(CP_ACP, 0, drvname, -1, descA.get(), dlen, nullptr, nullptr);
-        WideCharToMultiByte(CP_ACP, 0, devname, -1, modA, mlen, nullptr, nullptr);
+        WideCharToMultiByte(CP_ACP, 0, dname, -1, descA.data(), dlen, nullptr, nullptr);
+        WideCharToMultiByte(CP_ACP, 0, mname, -1, modA, mlen, nullptr, nullptr);
 
-        return callback(guid, descA.get(), modA, userPtr) != FALSE;
+        return callback(guid, descA.data(), modA, userPtr) != FALSE;
     };
 
     std::lock_guard listlock{gDeviceListMutex};
@@ -706,10 +701,10 @@ HRESULT WINAPI DSOAL_DirectSoundCaptureEnumerateA(LPDSENUMCALLBACKA callback, vo
 #define PREFIX "DirectSoundEnumerateW "
 HRESULT WINAPI DSOAL_DirectSoundCaptureEnumerateW(LPDSENUMCALLBACKW callback, void *userPtr) noexcept
 {
-    TRACE("({}, {})", reinterpret_cast<void*>(callback), userPtr);
+    TRACE("({}, {})", std::bit_cast<void*>(callback), userPtr);
 
-    auto do_enum = [callback,userPtr](GUID *guid, const WCHAR *drvname, const WCHAR *devname)
-    { return callback(guid, drvname, devname, userPtr) != FALSE; };
+    auto do_enum = [callback,userPtr](GUID *guid, const WCHAR *dname, const WCHAR *mname)
+    { return callback(guid, dname, mname, userPtr) != FALSE; };
 
     std::lock_guard listlock{gDeviceListMutex};
     return enumerate_mmdev(eCapture, gCaptureDevices, do_enum);

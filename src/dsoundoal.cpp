@@ -1,10 +1,12 @@
 #include "dsoundoal.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string_view>
 
 #include <ks.h>
@@ -59,8 +61,7 @@ auto GetDSBCapsString(DWORD flags) -> std::string
     auto ret = std::string{};
     ret.reserve(256);
 
-    auto first = true;
-    for(size_t idx{0};idx < CapNames.size();++idx)
+    for(const auto idx : std::views::iota(size_t{0}, CapNames.size()))
     {
         const auto flag = DWORD{1} << idx;
         if(flag > flags)
@@ -69,9 +70,7 @@ auto GetDSBCapsString(DWORD flags) -> std::string
             continue;
         flags &= ~flag;
 
-        if(first)
-            first = false;
-        else
+        if(!ret.empty())
             ret += " | ";
         ret += CapNames[idx];
     }
@@ -311,11 +310,8 @@ std::vector<SharedDevice*> SharedDevice::sDeviceList;
 auto SharedDevice::GetById(const GUID &deviceId) noexcept
     -> ds::expected<ComPtr<SharedDevice>,HRESULT>
 {
-    auto find_id = [&deviceId](SharedDevice *device)
-    { return deviceId == device->mId; };
-
     std::unique_lock listlock{sDeviceListMutex};
-    auto sharediter = std::find_if(sDeviceList.begin(), sDeviceList.end(), find_id);
+    auto sharediter = std::ranges::find(sDeviceList, deviceId, &SharedDevice::mId);
     if(sharediter != sDeviceList.end())
     {
         (*sharediter)->AddRef();
@@ -343,7 +339,7 @@ void SharedDevice::dispose() noexcept
 {
     std::lock_guard listlock{sDeviceListMutex};
 
-    auto shared_iter = std::find(sDeviceList.begin(), sDeviceList.end(), this);
+    auto shared_iter = std::ranges::find(sDeviceList, this);
     if(shared_iter != sDeviceList.end())
     {
         std::unique_ptr<SharedDevice> device{*shared_iter};
@@ -362,7 +358,7 @@ BufferSubList::~BufferSubList()
     uint64_t usemask{~mFreeMask};
     while(usemask)
     {
-        auto idx = ds::countr_zero(usemask);
+        auto idx = std::countr_zero(usemask);
         std::destroy_at(std::to_address(mBuffers->begin() + idx));
         usemask &= ~(1_u64 << idx);
     }
@@ -422,7 +418,7 @@ ComPtr<Buffer> DSound8OAL::createSecondaryBuffer(IDirectSoundBuffer *original)
     if(!sublist)
         return {};
 
-    auto idx = static_cast<unsigned int>(ds::countr_zero(sublist->mFreeMask));
+    auto idx = static_cast<unsigned int>(std::countr_zero(sublist->mFreeMask));
     ComPtr<Buffer> buffer{::new(&(*sublist->mBuffers)[idx]) Buffer{*this, mIs8, original}};
     sublist->mFreeMask &= ~(1_u64 << idx);
 
@@ -452,9 +448,9 @@ void DSound8OAL::notifyThread() noexcept
             continue;
         }
 
-        auto enditer = std::remove_if(mNotifyBuffers.begin(), mNotifyBuffers.end(),
-            [](Buffer *buffer) noexcept { return !buffer->updateNotify(); });
-        mNotifyBuffers.erase(enditer, mNotifyBuffers.end());
+        auto enditer = std::ranges::remove_if(mNotifyBuffers, [](Buffer *buffer) noexcept
+        { return !buffer->updateNotify(); });
+        mNotifyBuffers.erase(enditer.begin(), enditer.end());
 
         mNotifyCond.wait_for(lock, waittime);
     }
@@ -463,14 +459,14 @@ void DSound8OAL::notifyThread() noexcept
 
 void DSound8OAL::triggerNotifies() noexcept
 {
-    auto enditer = std::remove_if(mNotifyBuffers.begin(), mNotifyBuffers.end(),
-        [](Buffer *buffer) noexcept { return !buffer->updateNotify(); });
-    mNotifyBuffers.erase(enditer, mNotifyBuffers.end());
+    auto enditer = std::ranges::remove_if(mNotifyBuffers, [](Buffer *buffer) noexcept
+    { return !buffer->updateNotify(); });
+    mNotifyBuffers.erase(enditer.begin(), enditer.end());
 }
 
 void DSound8OAL::addNotifyBuffer(Buffer *buffer)
 {
-    if(std::find(mNotifyBuffers.cbegin(), mNotifyBuffers.cend(), buffer) == mNotifyBuffers.cend())
+    if(std::ranges::find(mNotifyBuffers, buffer) == mNotifyBuffers.end())
     {
         mNotifyBuffers.emplace_back(buffer);
         if(!mNotifyThread.joinable()) [[unlikely]]
@@ -603,7 +599,7 @@ HRESULT STDMETHODCALLTYPE DSound8OAL::CreateSoundBuffer(const DSBUFFERDESC *buff
          * as appropriate.
          */
         hr = DS_OK;
-        if(mPrimaryBuffer.AddRef() == 1)
+        if(mPrimaryBuffer.AddRef() == 1 && mPrimaryBuffer.getFlags() == 0)
         {
             hr = mPrimaryBuffer.Initialize(as<IDirectSound*>(), &bufdesc);
             if(FAILED(hr))
@@ -764,7 +760,7 @@ HRESULT STDMETHODCALLTYPE DSound8OAL::SetCooperativeLevel(HWND hwnd, DWORD level
             auto usemask = ~group.mFreeMask;
             while(usemask)
             {
-                auto idx = static_cast<unsigned int>(ds::countr_zero(usemask));
+                auto idx = static_cast<unsigned int>(std::countr_zero(usemask));
                 usemask &= ~(1_u64 << idx);
 
                 auto state = DWORD{};
@@ -940,8 +936,7 @@ void DSound8OAL::dispose(Buffer *buffer) noexcept
      */
     for(auto &group : mSecondaryBuffers)
     {
-        ptrdiff_t idx{buffer - group.mBuffers->data()};
-        if(static_cast<std::make_unsigned_t<ptrdiff_t>>(idx) < 64)
+        if(const auto idx = as_unsigned(buffer - group.mBuffers->data()); idx < 64)
         {
             std::destroy_at(buffer);
             group.mFreeMask |= 1_u64 << idx;
