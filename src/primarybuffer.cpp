@@ -17,7 +17,7 @@ using voidp = void*;
 using cvoidp = const void*;
 
 /* The primary buffer has a fixed size, apprently. */
-constexpr size_t PrimaryBufSize{32768};
+inline constexpr auto PrimaryBufSize = DWORD{32768};
 
 } // namespace
 
@@ -162,7 +162,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::GetCurrentPosition(DWORD *playCursor, D
 {
     DEBUG("({})->({}, {})", voidp{this}, voidp{playCursor}, voidp{writeCursor});
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(mWriteEmu)
         return mWriteEmu->GetCurrentPosition(playCursor, writeCursor);
     return DSERR_PRIOLEVELNEEDED;
@@ -180,8 +180,8 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::GetFormat(WAVEFORMATEX *wfx, DWORD size
         return DSERR_INVALIDPARAM;
     }
 
-    std::lock_guard lock{mMutex};
-    const DWORD size{static_cast<DWORD>(sizeof(mFormat.Format)) + mFormat.Format.cbSize};
+    auto const lock = std::lock_guard{mMutex};
+    auto const size = DWORD{sizeof(mFormat.Format)} + mFormat.Format.cbSize;
     if(sizeWritten)
         *sizeWritten = size;
     if(wfx)
@@ -206,7 +206,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::GetVolume(LONG *volume) noexcept
     if(!(mFlags&DSBCAPS_CTRLVOLUME))
         return DSERR_CONTROLUNAVAIL;
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     *volume = mVolume;
     return DS_OK;
 }
@@ -223,7 +223,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::GetPan(LONG *pan) noexcept
     if(!(mFlags&DSBCAPS_CTRLPAN))
         return DSERR_CONTROLUNAVAIL;
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     *pan = mPan;
     return DS_OK;
 }
@@ -240,7 +240,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::GetFrequency(DWORD *frequency) noexcept
     if(!(mFlags&DSBCAPS_CTRLFREQUENCY))
         return DSERR_CONTROLUNAVAIL;
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     *frequency = mFormat.Format.nSamplesPerSec;
     return DS_OK;
 }
@@ -254,7 +254,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::GetStatus(DWORD *status) noexcept
     if(!status)
         return DSERR_INVALIDPARAM;
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     bool playing{mPlaying};
     if(!playing && mParent.getPriorityLevel() < DSSCL_WRITEPRIMARY)
     {
@@ -265,7 +265,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::GetStatus(DWORD *status) noexcept
             {
                 auto idx = static_cast<unsigned int>(std::countr_zero(usemask));
                 usemask &= ~(1_u64 << idx);
-                Buffer &buffer = (*group.mBuffers)[idx];
+                auto const &buffer = (*group.mBuffers)[idx];
 
                 if(const ALuint source{buffer.getSource()})
                 {
@@ -307,15 +307,14 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Initialize(IDirectSound *directSound, c
     static constexpr DWORD BadFlags{DSBCAPS_CTRLFX | DSBCAPS_CTRLPOSITIONNOTIFY};
     if((dsBufferDesc->dwFlags&BadFlags))
     {
-        WARN("Bad dwFlags {:08x}", dsBufferDesc->dwFlags);
+        WARN("Bad dwFlags {:#x}", dsBufferDesc->dwFlags);
         return DSERR_INVALIDPARAM;
     }
 
-    if((dsBufferDesc->dwFlags&DSBCAPS_LOCSOFTWARE)) {
+    if((dsBufferDesc->dwFlags&DSBCAPS_LOCSOFTWARE))
         WARN("Using DSBCAPS_LOCHARDWARE instead of DSBCAPS_LOCSOFTWARE");
-    }
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(mFlags != 0)
         return DSERR_ALREADYINITIALIZED;
 
@@ -326,7 +325,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Initialize(IDirectSound *directSound, c
             return hr;
     }
 
-    mFlags = (dsBufferDesc->dwFlags & ~DSBCAPS_LOCSOFTWARE) | DSBCAPS_LOCHARDWARE;
+    mFlags = (dsBufferDesc->dwFlags & ~DWORD{DSBCAPS_LOCSOFTWARE}) | DSBCAPS_LOCHARDWARE;
 
     mImmediate.dwSize = sizeof(mImmediate);
     mImmediate.vPosition.x = 0.0f;
@@ -356,10 +355,10 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Initialize(IDirectSound *directSound, c
 #define PREFIX CLASS_PREFIX "Lock "
 HRESULT STDMETHODCALLTYPE PrimaryBuffer::Lock(DWORD offset, DWORD bytes, void **audioPtr1, DWORD *audioBytes1, void **audioPtr2, DWORD *audioBytes2, DWORD flags) noexcept
 {
-    DEBUG("({})->({}, {}, {}, {}, {}, {}, {})", voidp{this}, offset, bytes, voidp{audioPtr1},
+    DEBUG("({})->({}, {}, {}, {}, {}, {}, {:#x})", voidp{this}, offset, bytes, voidp{audioPtr1},
         voidp{audioBytes1}, voidp{audioPtr2}, voidp{audioBytes2}, flags);
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(mWriteEmu)
         return mWriteEmu->Lock(offset, bytes, audioPtr1, audioBytes1, audioPtr2, audioBytes2, flags);
     return DSERR_PRIOLEVELNEEDED;
@@ -369,15 +368,15 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Lock(DWORD offset, DWORD bytes, void **
 #define PREFIX CLASS_PREFIX "Play "
 HRESULT STDMETHODCALLTYPE PrimaryBuffer::Play(DWORD reserved1, DWORD reserved2, DWORD flags) noexcept
 {
-    DEBUG("({})->({}, {}, {})", voidp{this}, reserved1, reserved2, flags);
+    DEBUG("({})->({}, {}, {:#x})", voidp{this}, reserved1, reserved2, flags);
 
     if(!(flags & DSBPLAY_LOOPING))
     {
-        WARN("Flags ({:08x}) not set to DSBPLAY_LOOPING", flags);
+        WARN("Flags ({:#010x}) not set to DSBPLAY_LOOPING", flags);
         return DSERR_INVALIDPARAM;
     }
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     auto hr = S_OK;
     if(mWriteEmu)
         hr = mWriteEmu->Play(reserved1, reserved2, flags);
@@ -408,7 +407,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::SetFormat(const WAVEFORMATEX *wfx) noex
         return DSERR_INVALIDPARAM;
     }
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(mParent.getPriorityLevel() < DSSCL_PRIORITY)
         return DSERR_PRIOLEVELNEEDED;
 
@@ -426,14 +425,14 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::SetFormat(const WAVEFORMATEX *wfx) noex
         /* NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) */
         auto *wfe = CONTAINING_RECORD(wfx, const WAVEFORMATEXTENSIBLE, Format);
         TRACE("Requested primary format:\n"
-            "    FormatTag          = 0x{:04x}\n"
+            "    FormatTag          = {:#06x}\n"
             "    Channels           = {}\n"
             "    SamplesPerSec      = {}\n"
             "    AvgBytesPerSec     = {}\n"
             "    BlockAlign         = {}\n"
             "    BitsPerSample      = {}\n"
             "    ValidBitsPerSample = {}\n"
-            "    ChannelMask        = 0x{:08x}\n"
+            "    ChannelMask        = {:#010x}\n"
             "    SubFormat          = {}",
             wfe->Format.wFormatTag, wfe->Format.nChannels, wfe->Format.nSamplesPerSec,
             wfe->Format.nAvgBytesPerSec, wfe->Format.nBlockAlign, wfe->Format.wBitsPerSample,
@@ -444,7 +443,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::SetFormat(const WAVEFORMATEX *wfx) noex
     else
     {
         TRACE("Requested primary format:\n"
-            "    FormatTag      = 0x{:04x}\n"
+            "    FormatTag      = {:#06x}\n"
             "    Channels       = {}\n"
             "    SamplesPerSec  = {}\n"
             "    AvgBytesPerSec = {}\n"
@@ -536,7 +535,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::SetFormat(const WAVEFORMATEX *wfx) noex
         }
         else
         {
-            FIXME("Unhandled format tag {:04x}", wfx->wFormatTag);
+            FIXME("Unhandled format tag {:#06x}", wfx->wFormatTag);
             return DSERR_INVALIDPARAM;
         }
 
@@ -570,7 +569,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::SetVolume(LONG volume) noexcept
         return DSERR_INVALIDPARAM;
     }
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(!(mFlags&DSBCAPS_CTRLVOLUME))
         return DSERR_CONTROLUNAVAIL;
 
@@ -592,7 +591,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::SetPan(LONG pan) noexcept
         return DSERR_INVALIDPARAM;
     }
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(!(mFlags&DSBCAPS_CTRLPAN))
         return DSERR_CONTROLUNAVAIL;
 
@@ -619,7 +618,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Stop() noexcept
 {
     DEBUG("({})->()", voidp{this});
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     auto hr = S_OK;
     if(mWriteEmu)
     {
@@ -640,7 +639,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Unlock(void *audioPtr1, DWORD audioByte
 {
     DEBUG("({})->({}, {}, {}, {})", voidp{this}, audioPtr1, audioBytes1, audioPtr2, audioBytes2);
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(mWriteEmu)
         return mWriteEmu->Unlock(audioPtr1, audioBytes1, audioPtr2, audioBytes2);
     return DSERR_INVALIDCALL;
@@ -652,7 +651,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Restore() noexcept
 {
     DEBUG("({})->()", voidp{this});
 
-    std::lock_guard lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(mWriteEmu)
         return mWriteEmu->Restore();
     return DS_OK;
@@ -703,7 +702,7 @@ void PrimaryBuffer::setParams(const DS3DLISTENER &params, const std::bitset<Flag
         {
             if(buffer->getCurrentMode() != DS3DMODE_DISABLE)
             {
-                if(ALuint source{buffer->getSource()})
+                if(auto const source = buffer->getSource())
                     alSourcefDirect(mContext, source, AL_ROLLOFF_FACTOR, params.flRolloffFactor);
             }
         }
@@ -764,7 +763,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::GetAllParameters(DS3DLISTEN
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     listener->vPosition = self->mImmediate.vPosition;
     listener->vVelocity = self->mImmediate.vVelocity;
     listener->vOrientFront = self->mImmediate.vOrientFront;
@@ -786,8 +785,8 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::GetDistanceFactor(D3DVALUE 
         return DSERR_INVALIDPARAM;
 
     auto self = impl_from_base();
+    auto const lock = std::lock_guard{self->mMutex};
     *distanceFactor = self->mImmediate.flDistanceFactor;
-
     return DS_OK;
 }
 #undef PREFIX
@@ -801,8 +800,8 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::GetDopplerFactor(D3DVALUE *
         return DSERR_INVALIDPARAM;
 
     auto self = impl_from_base();
+    auto const lock = std::lock_guard{self->mMutex};
     *dopplerFactor = self->mImmediate.flDopplerFactor;
-
     return DS_OK;
 }
 #undef PREFIX
@@ -816,10 +815,9 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::GetOrientation(D3DVECTOR *o
         return DSERR_INVALIDPARAM;
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     *orientFront = self->mImmediate.vOrientFront;
     *orientTop = self->mImmediate.vOrientTop;
-
     return DS_OK;
 }
 #undef PREFIX
@@ -833,9 +831,8 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::GetPosition(D3DVECTOR *posi
         return DSERR_INVALIDPARAM;
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     *position = self->mImmediate.vPosition;
-
     return DS_OK;
 }
 #undef PREFIX
@@ -849,8 +846,8 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::GetRolloffFactor(D3DVALUE *
         return DSERR_INVALIDPARAM;
 
     auto self = impl_from_base();
+    auto const lock = std::lock_guard{self->mMutex};
     *rolloffFactor = self->mImmediate.flRolloffFactor;
-
     return DS_OK;
 }
 #undef PREFIX
@@ -864,9 +861,8 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::GetVelocity(D3DVECTOR *velo
         return DSERR_INVALIDPARAM;
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     *velocity = self->mImmediate.vVelocity;
-
     return DS_OK;
 }
 #undef PREFIX
@@ -904,7 +900,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::SetAllParameters(const DS3D
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred = *listener;
@@ -934,7 +930,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::SetDistanceFactor(D3DVALUE 
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.flDistanceFactor = distanceFactor;
@@ -967,7 +963,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::SetDopplerFactor(D3DVALUE d
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.flDopplerFactor = dopplerFactor;
@@ -991,7 +987,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::SetOrientation(D3DVALUE xFr
         xTop, yTop, zTop, apply);
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.vOrientFront.x = xFront;
@@ -1026,7 +1022,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::SetPosition(D3DVALUE x, D3D
     DEBUG("({})->({:f}, {:f}, {:f}, {})", voidp{this}, x, y, z, apply);
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.vPosition.x = x;
@@ -1060,7 +1056,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::SetRolloffFactor(D3DVALUE r
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.flRolloffFactor = rolloffFactor;
@@ -1075,7 +1071,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::SetRolloffFactor(D3DVALUE r
         {
             if(buffer->getCurrentMode() != DS3DMODE_DISABLE)
             {
-                if(ALuint source{buffer->getSource()})
+                if(auto const source = buffer->getSource())
                     alSourcefDirect(self->mContext, source, AL_ROLLOFF_FACTOR, rolloffFactor);
             }
         }
@@ -1093,7 +1089,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::SetVelocity(D3DVALUE x, D3D
     DEBUG("({})->({:f}, {:f}, {:f}, {})", voidp{this}, x, y, z, apply);
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.vVelocity.x = x;
@@ -1121,7 +1117,7 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Listener3D::CommitDeferredSettings() no
     DEBUG("({})->()", voidp{this});
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
 
     alcSuspendContext(self->mContext);
     self->commit();
@@ -1164,10 +1160,8 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Prop::Get(REFGUID guidPropSet, ULONG dw
     void *pInstanceData, ULONG cbInstanceData, void *pPropData, ULONG cbPropData,
     ULONG *pcbReturned) noexcept
 {
-    FIXME("({})->({}, 0x{:x}, {}, {}, {}, {}, {}): stub!", voidp{this},
-        PropidPrinter{guidPropSet}.c_str(), dwPropID, pInstanceData, cbInstanceData, pPropData,
-        cbPropData, voidp{pcbReturned});
-
+    FIXME("({})->({}, {:#x}, {}, {}, {}, {}, {})", voidp{this}, PropidPrinter{guidPropSet}.c_str(),
+        dwPropID, pInstanceData, cbInstanceData, pPropData, cbPropData, voidp{pcbReturned});
     return E_PROP_ID_UNSUPPORTED;
 }
 #undef PREFIX
@@ -1176,10 +1170,8 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Prop::Get(REFGUID guidPropSet, ULONG dw
 HRESULT STDMETHODCALLTYPE PrimaryBuffer::Prop::Set(REFGUID guidPropSet, ULONG dwPropID,
     void *pInstanceData, ULONG cbInstanceData, void *pPropData, ULONG cbPropData) noexcept
 {
-    FIXME("({})->({}, 0x{:x}, {}, {}, {}, {}): stub!", voidp{this},
-        PropidPrinter{guidPropSet}.c_str(), dwPropID, pInstanceData, cbInstanceData, pPropData,
-        cbPropData);
-
+    FIXME("({})->({}, {:#x}, {}, {}, {}, {})", voidp{this}, PropidPrinter{guidPropSet}.c_str(),
+        dwPropID, pInstanceData, cbInstanceData, pPropData, cbPropData);
     return E_PROP_ID_UNSUPPORTED;
 }
 #undef PREFIX
@@ -1188,9 +1180,8 @@ HRESULT STDMETHODCALLTYPE PrimaryBuffer::Prop::Set(REFGUID guidPropSet, ULONG dw
 HRESULT STDMETHODCALLTYPE PrimaryBuffer::Prop::QuerySupport(REFGUID guidPropSet, ULONG dwPropID,
     ULONG *pTypeSupport) noexcept
 {
-    FIXME("({})->({}, 0x{:x}, {}): stub!", voidp{this}, PropidPrinter{guidPropSet}.c_str(),
-        dwPropID, voidp{pTypeSupport});
-
+    FIXME("({})->({}, {:#x}, {})", voidp{this}, PropidPrinter{guidPropSet}.c_str(), dwPropID,
+        voidp{pTypeSupport});
     return E_PROP_ID_UNSUPPORTED;
 }
 #undef PREFIX

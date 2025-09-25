@@ -35,7 +35,7 @@ ALenum ConvertFormat(WAVEFORMATEXTENSIBLE &dst, const WAVEFORMATEX &src,
     const std::bitset<ExtensionCount> exts) noexcept
 {
     TRACE("Requested buffer format:\n"
-        "    FormatTag      = 0x{:04x}\n"
+        "    FormatTag      = {:#06x}\n"
         "    Channels       = {}\n"
         "    SamplesPerSec  = {}\n"
         "    AvgBytesPerSec = {}\n"
@@ -72,7 +72,7 @@ ALenum ConvertFormat(WAVEFORMATEXTENSIBLE &dst, const WAVEFORMATEX &src,
         }
         break;
     default:
-        FIXME("Format 0x{:04x} samples not supported", dst.Format.wFormatTag);
+        FIXME("Format {:#06x} samples not supported", dst.Format.wFormatTag);
         return AL_NONE;
     }
 
@@ -111,7 +111,7 @@ ALenum ConvertFormat(WAVEFORMATEXTENSIBLE &dst, const WAVEFORMATEXTENSIBLE &src,
 {
     /* NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) */
     TRACE("Requested buffer format:\n"
-        "    FormatTag          = 0x{:04x}\n"
+        "    FormatTag          = {:#06x}\n"
         "    Channels           = {}\n"
         "    SamplesPerSec      = {}\n"
         "    AvgBytesPerSec     = {}\n"
@@ -119,7 +119,7 @@ ALenum ConvertFormat(WAVEFORMATEXTENSIBLE &dst, const WAVEFORMATEXTENSIBLE &src,
         "    BitsPerSample      = {}\n"
         "    Size               = {}\n"
         "    ValidBitsPerSample = {}\n"
-        "    ChannelMask        = 0x{:08x}\n"
+        "    ChannelMask        = {:#010x}\n"
         "    SubFormat          = {}",
         src.Format.wFormatTag, src.Format.nChannels, src.Format.nSamplesPerSec,
         src.Format.nAvgBytesPerSec, src.Format.nBlockAlign, src.Format.wBitsPerSample,
@@ -141,7 +141,7 @@ ALenum ConvertFormat(WAVEFORMATEXTENSIBLE &dst, const WAVEFORMATEXTENSIBLE &src,
 
     auto unsupported_format = [&dst]
     {
-        FIXME("Unsupported channel configuration ({} channels, 0x{:08x})", dst.Format.nChannels,
+        FIXME("Unsupported channel configuration ({} channels, {:#010x})", dst.Format.nChannels,
             dst.dwChannelMask);
         return AL_NONE;
     };
@@ -479,7 +479,8 @@ Buffer::~Buffer()
 
 bool Buffer::updateNotify() noexcept
 {
-    ALint state{}, ioffset{};
+    auto state = ALint{};
+    auto ioffset = ALint{};
     alGetSourceiDirect(mContext, mSource, AL_BYTE_OFFSET, &ioffset);
     alGetSourceiDirect(mContext, mSource, AL_SOURCE_STATE, &state);
 
@@ -774,7 +775,8 @@ HRESULT STDMETHODCALLTYPE Buffer::GetCurrentPosition(DWORD *playCursor, DWORD *w
     }
 
     auto &format = mBuffer->mWfxFormat.Format;
-    DWORD pos, writecursor;
+    auto pos = DWORD{};
+    auto writecursor = DWORD{};
     if(status == AL_PLAYING)
     {
         pos = static_cast<ALuint>(ofs);
@@ -807,8 +809,8 @@ HRESULT STDMETHODCALLTYPE Buffer::GetCurrentPosition(DWORD *playCursor, DWORD *w
      * Some testing should be done to see what happens. Wine always wraps the
      * play cursor, so just do that for now.
      */
-    pos %= mBuffer->mData.size();
-    writecursor %= mBuffer->mData.size();
+    pos %= ds::saturate_cast<DWORD>(mBuffer->mData.size());
+    writecursor %= ds::saturate_cast<DWORD>(mBuffer->mData.size());
 
     DEBUG(" pos = {}, write pos = {}", pos, writecursor);
 
@@ -830,7 +832,7 @@ HRESULT STDMETHODCALLTYPE Buffer::GetFormat(WAVEFORMATEX *wfx, DWORD sizeAllocat
         return DSERR_INVALIDPARAM;
     }
 
-    const DWORD size{static_cast<DWORD>(sizeof(mBuffer->mWfxFormat.Format)) + mBuffer->mWfxFormat.Format.cbSize};
+    auto const size = DWORD{sizeof(mBuffer->mWfxFormat.Format)}+mBuffer->mWfxFormat.Format.cbSize;
     if(sizeWritten)
         *sizeWritten = size;
     if(wfx)
@@ -922,7 +924,7 @@ HRESULT STDMETHODCALLTYPE Buffer::GetStatus(DWORD *status) noexcept
     }
 
     *status = res;
-    DEBUG(" status = 0x{:08x}", *status);
+    DEBUG(" status = {:#010x}", res);
     return S_OK;
 }
 #undef PREFIX
@@ -932,7 +934,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Initialize(IDirectSound *directSound, const DS
 {
     DEBUG("({})->({}, {})", voidp{this}, voidp{directSound}, cvoidp{dsBufferDesc});
 
-    std::unique_lock lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(mIsInitialized) return DSERR_ALREADYINITIALIZED;
 
     if(!mBuffer)
@@ -993,7 +995,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Initialize(IDirectSound *directSound, const DS
 #define PREFIX CLASS_PREFIX "Lock "
 HRESULT STDMETHODCALLTYPE Buffer::Lock(DWORD offset, DWORD bytes, void **audioPtr1, DWORD *audioBytes1, void **audioPtr2, DWORD *audioBytes2, DWORD flags) noexcept
 {
-    DEBUG("({})->({}, {}, {}, {}, {}, {}, {})", voidp{this}, offset, bytes, voidp{audioPtr1},
+    DEBUG("({})->({}, {}, {}, {}, {}, {}, {:#x})", voidp{this}, offset, bytes, voidp{audioPtr1},
         voidp{audioBytes1}, voidp{audioPtr2}, voidp{audioBytes2}, flags);
 
     if(!audioPtr1 || !audioBytes1)
@@ -1054,9 +1056,9 @@ HRESULT STDMETHODCALLTYPE Buffer::Lock(DWORD offset, DWORD bytes, void **audioPt
 #define PREFIX CLASS_PREFIX "Play "
 HRESULT STDMETHODCALLTYPE Buffer::Play(DWORD reserved1, DWORD priority, DWORD flags) noexcept
 {
-    DEBUG("({})->({}, {}, {})", voidp{this}, reserved1, priority, flags);
+    DEBUG("({})->({}, {}, {:#x})", voidp{this}, reserved1, priority, flags);
 
-    std::unique_lock lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(mBufferLost) [[unlikely]]
     {
         WARN("Buffer lost");
@@ -1106,7 +1108,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Play(DWORD reserved1, DWORD priority, DWORD fl
     if(state == AL_PLAYING)
         return DS_OK;
 
-    mLastPos %= mBuffer->mData.size();
+    mLastPos %= ds::saturate_cast<DWORD>(mBuffer->mData.size());
     if(state == AL_INITIAL)
     {
         alSourceiDirect(mContext, mSource, AL_BUFFER, static_cast<ALint>(mBuffer->mAlBuffer));
@@ -1135,7 +1137,7 @@ HRESULT STDMETHODCALLTYPE Buffer::SetCurrentPosition(DWORD newPosition) noexcept
         return DSERR_INVALIDPARAM;
     newPosition -= newPosition % mBuffer->mWfxFormat.Format.nBlockAlign;
 
-    std::unique_lock lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(mSource != 0)
     {
         alSourceiDirect(mContext, mSource, AL_BYTE_OFFSET, static_cast<ALint>(newPosition));
@@ -1169,7 +1171,7 @@ HRESULT STDMETHODCALLTYPE Buffer::SetVolume(LONG volume) noexcept
     if(!(mBuffer->mFlags&DSBCAPS_CTRLVOLUME))
         return DSERR_CONTROLUNAVAIL;
 
-    std::unique_lock lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     mVolume = volume;
     if(mSource != 0) [[likely]]
         alSourcefDirect(mContext, mSource, AL_GAIN, mB_to_gain(volume));
@@ -1192,7 +1194,7 @@ HRESULT STDMETHODCALLTYPE Buffer::SetPan(LONG pan) noexcept
     if(!(mBuffer->mFlags&DSBCAPS_CTRLPAN))
         return DSERR_CONTROLUNAVAIL;
 
-    std::unique_lock lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     mPan = pan;
     if(!(mBuffer->mFlags&DSBCAPS_CTRL3D) && mSource != 0) [[likely]]
     {
@@ -1221,7 +1223,7 @@ HRESULT STDMETHODCALLTYPE Buffer::SetFrequency(DWORD frequency) noexcept
     if(!(mBuffer->mFlags&DSBCAPS_CTRLFREQUENCY))
         return DSERR_CONTROLUNAVAIL;
 
-    std::unique_lock lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     mFrequency = frequency ? frequency : mBuffer->mWfxFormat.Format.nSamplesPerSec;
     if(mSource != 0)
     {
@@ -1239,7 +1241,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Stop() noexcept
 {
     DEBUG("({})->()", voidp{this});
 
-    std::unique_lock lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(mSource == 0) [[unlikely]]
         return DS_OK;
 
@@ -1300,7 +1302,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Restore() noexcept
 {
     DEBUG("({})->()", voidp{this});
 
-    std::unique_lock lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(mParent.getPriorityLevel() == DSSCL_WRITEPRIMARY
         && this != mParent.getPrimary().getWriteEmu())
         return DSERR_BUFFERLOST;
@@ -1344,11 +1346,11 @@ HRESULT STDMETHODCALLTYPE Buffer::SetFX(DWORD effectsCount, DSEFFECTDESC *dsFXDe
      *
      * Not that many apps used this API, so it's not likely a big loss.
      */
-    std::fill(rescodes.begin(), rescodes.end(), DSFXR_FAILED);
+    std::ranges::fill(rescodes, DSFXR_FAILED);
 
-    std::for_each(fxdescs.begin(), fxdescs.end(), [](const DSEFFECTDESC &desc)
+    std::ranges::for_each(fxdescs, [](const DSEFFECTDESC &desc)
     {
-        DEBUG("Unsupported effect: 0x{:x}, {}", desc.dwFlags,
+        DEBUG("Unsupported effect: {:#x}, {}", desc.dwFlags,
             DsfxPrinter{desc.guidDSFXClass}.c_str());
     });
 
@@ -1361,7 +1363,7 @@ HRESULT STDMETHODCALLTYPE Buffer::AcquireResources(DWORD flags, DWORD effectsCou
 {
     DEBUG("({})->({}, {}, {})", voidp{this}, flags, effectsCount, voidp{resultCodes});
 
-    std::unique_lock lock{mMutex};
+    auto const lock = std::lock_guard{mMutex};
     if(mBufferLost) [[unlikely]]
     {
         WARN("Buffer lost");
@@ -1401,7 +1403,7 @@ HRESULT STDMETHODCALLTYPE Buffer::AcquireResources(DWORD flags, DWORD effectsCou
             }
         }
 
-        if(HRESULT hr{setLocation(loc)}; FAILED(hr))
+        if(auto const hr = setLocation(loc); FAILED(hr))
             return hr;
     }
 
@@ -1542,7 +1544,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::GetAllParameters(DS3DBUFFER *ds3dBuf
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     ds3dBuffer->vPosition = self->mImmediate.vPosition;
     ds3dBuffer->vVelocity = self->mImmediate.vVelocity;
     ds3dBuffer->dwInsideConeAngle = self->mImmediate.dwInsideConeAngle;
@@ -1569,7 +1571,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::GetConeAngles(DWORD *insideConeAngle
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     *insideConeAngle = self->mImmediate.dwInsideConeAngle;
     *outsideConeAngle = self->mImmediate.dwOutsideConeAngle;
     return DS_OK;
@@ -1588,7 +1590,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::GetConeOrientation(D3DVECTOR *orient
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     *orientation = self->mImmediate.vConeOrientation;
     return DS_OK;
 }
@@ -1606,7 +1608,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::GetConeOutsideVolume(LONG *coneOutsi
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     *coneOutsideVolume = self->mImmediate.lConeOutsideVolume;
     return DS_OK;
 }
@@ -1624,7 +1626,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::GetMaxDistance(D3DVALUE *maxDistance
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     *maxDistance = self->mImmediate.flMaxDistance;
     return DS_OK;
 }
@@ -1642,7 +1644,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::GetMinDistance(D3DVALUE *minDistance
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     *minDistance = self->mImmediate.flMinDistance;
     return DS_OK;
 }
@@ -1660,7 +1662,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::GetMode(DWORD *mode) noexcept
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     *mode = self->mImmediate.dwMode;
     return DS_OK;
 }
@@ -1678,7 +1680,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::GetPosition(D3DVECTOR *position) noe
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     *position = self->mImmediate.vPosition;
     return DS_OK;
 }
@@ -1696,7 +1698,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::GetVelocity(D3DVECTOR *velocity) noe
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     *velocity = self->mImmediate.vVelocity;
     return DS_OK;
 }
@@ -1749,7 +1751,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::SetAllParameters(const DS3DBUFFER *d
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred = *ds3dBuffer;
@@ -1778,7 +1780,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::SetConeAngles(DWORD insideConeAngle,
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.dwInsideConeAngle = insideConeAngle;
@@ -1809,7 +1811,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::SetConeOrientation(D3DVALUE x, D3DVA
     DEBUG("({})->({:f}, {:f}, {:f}, {})", voidp{this}, x, y, z, apply);
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.vConeOrientation.x = x;
@@ -1846,7 +1848,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::SetConeOutsideVolume(LONG coneOutsid
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.lConeOutsideVolume = coneOutsideVolume;
@@ -1877,7 +1879,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::SetMaxDistance(D3DVALUE maxDistance,
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.flMaxDistance = maxDistance;
@@ -1907,7 +1909,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::SetMinDistance(D3DVALUE minDistance,
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.flMinDistance = minDistance;
@@ -1937,7 +1939,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::SetMode(DWORD mode, DWORD apply) noe
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.dwMode = mode;
@@ -1992,7 +1994,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::SetPosition(D3DVALUE x, D3DVALUE y, 
     DEBUG("({})->({:f}, {:f}, {:f}, {})", voidp{this}, x, y, z, apply);
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.vPosition.x = x;
@@ -2023,7 +2025,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Buffer3D::SetVelocity(D3DVALUE x, D3DVALUE y, 
     DEBUG("({})->({:f}, {:f}, {:f}, {})", voidp{this}, x, y, z, apply);
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(apply == DS3D_DEFERRED)
     {
         self->mDeferred.vVelocity.x = x;
@@ -2083,9 +2085,8 @@ HRESULT STDMETHODCALLTYPE Buffer::Prop::Get(REFGUID guidPropSet, ULONG dwPropID,
     void *pInstanceData, ULONG cbInstanceData, void *pPropData, ULONG cbPropData,
     ULONG *pcbReturned) noexcept
 {
-    DEBUG("({})->({}, 0x{:x}, {}, {}, {}, {}, {})", voidp{this},
-        PropidPrinter{guidPropSet}.c_str(), dwPropID, pInstanceData, cbInstanceData, pPropData,
-        cbPropData, voidp{pcbReturned});
+    DEBUG("({})->({}, {:#x}, {}, {}, {}, {}, {})", voidp{this}, PropidPrinter{guidPropSet}.c_str(),
+        dwPropID, pInstanceData, cbInstanceData, pPropData, cbPropData, voidp{pcbReturned});
 
     if(!pcbReturned)
         return E_POINTER;
@@ -2098,7 +2099,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Prop::Get(REFGUID guidPropSet, ULONG dwPropID,
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(guidPropSet == EAXPROPERTYID_EAX40_Source
         || guidPropSet == DSPROPSETID_EAX30_BufferProperties
         || guidPropSet == DSPROPSETID_EAX20_BufferProperties
@@ -2168,7 +2169,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Prop::Get(REFGUID guidPropSet, ULONG dwPropID,
             return DSERR_INVALIDPARAM;
         }
 
-        FIXME("Unhandled VoiceManager propid: 0x{:08x}", dwPropID);
+        FIXME("Unhandled VoiceManager propid: {:#010x}", dwPropID);
         return E_PROP_ID_UNSUPPORTED;
     }
 
@@ -2180,9 +2181,8 @@ HRESULT STDMETHODCALLTYPE Buffer::Prop::Get(REFGUID guidPropSet, ULONG dwPropID,
 HRESULT STDMETHODCALLTYPE Buffer::Prop::Set(REFGUID guidPropSet, ULONG dwPropID,
     void *pInstanceData, ULONG cbInstanceData, void *pPropData, ULONG cbPropData) noexcept
 {
-    DEBUG("({})->({}, 0x{:x}, {}, {}, {}, {})", voidp{this},
-        PropidPrinter{guidPropSet}.c_str(), dwPropID, pInstanceData, cbInstanceData, pPropData,
-        cbPropData);
+    DEBUG("({})->({}, {:#x}, {}, {}, {}, {})", voidp{this}, PropidPrinter{guidPropSet}.c_str(),
+        dwPropID, pInstanceData, cbInstanceData, pPropData, cbPropData);
 
     if(cbPropData > 0 && !pPropData)
     {
@@ -2191,7 +2191,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Prop::Set(REFGUID guidPropSet, ULONG dwPropID,
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(guidPropSet == EAXPROPERTYID_EAX40_Source
         || guidPropSet == DSPROPSETID_EAX30_BufferProperties
         || guidPropSet == DSPROPSETID_EAX20_BufferProperties
@@ -2288,7 +2288,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Prop::Set(REFGUID guidPropSet, ULONG dwPropID,
             return DSERR_INVALIDPARAM;
         }
 
-        FIXME("Unhandled VoiceManager propid: 0x{:08x}", dwPropID);
+        FIXME("Unhandled VoiceManager propid: {:#010x}", dwPropID);
         return E_PROP_ID_UNSUPPORTED;
     }
 
@@ -2300,8 +2300,8 @@ HRESULT STDMETHODCALLTYPE Buffer::Prop::Set(REFGUID guidPropSet, ULONG dwPropID,
 HRESULT STDMETHODCALLTYPE Buffer::Prop::QuerySupport(REFGUID guidPropSet, ULONG dwPropID,
     ULONG *pTypeSupport) noexcept
 {
-    TRACE("({})->({}, 0x{:x}, {})", voidp{this}, PropidPrinter{guidPropSet}.c_str(),
-        dwPropID, voidp{pTypeSupport});
+    TRACE("({})->({}, {:#x}, {})", voidp{this}, PropidPrinter{guidPropSet}.c_str(), dwPropID,
+        voidp{pTypeSupport});
 
     if(!pTypeSupport)
         return E_POINTER;
@@ -2413,7 +2413,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Notify::SetNotificationPositions(DWORD numNoti
     }
 
     auto self = impl_from_base();
-    std::lock_guard lock{self->mMutex};
+    auto const lock = std::lock_guard{self->mMutex};
     if(self->mSource != 0)
     {
         ALint state{};
@@ -2440,11 +2440,11 @@ HRESULT STDMETHODCALLTYPE Buffer::Notify::SetNotificationPositions(DWORD numNoti
     {
         auto invalidNotify = std::find_if_not(notifyspan.begin(), notifyspan.end(),
             [self](const DSBPOSITIONNOTIFY &notify) noexcept -> bool
-            {
-                DEBUG(" offset = {}, event = {}", notify.dwOffset, voidp{notify.hEventNotify});
-                return notify.dwOffset < self->mBuffer->mData.size() ||
-                    notify.dwOffset == static_cast<DWORD>(DSBPN_OFFSETSTOP);
-            });
+        {
+            DEBUG(" offset = {}, event = {}", notify.dwOffset, voidp{notify.hEventNotify});
+            return notify.dwOffset < self->mBuffer->mData.size()
+                || notify.dwOffset == static_cast<DWORD>(DSBPN_OFFSETSTOP);
+        });
         if(invalidNotify != notifyspan.end())
         {
             WARN("Out of range ({}: {} >= {})", std::distance(notifyspan.begin(), invalidNotify),
@@ -2453,10 +2453,7 @@ HRESULT STDMETHODCALLTYPE Buffer::Notify::SetNotificationPositions(DWORD numNoti
         }
         newNots.assign(notifyspan.begin(), notifyspan.end());
 
-        static constexpr auto sort_dsbpn = [](const DSBPOSITIONNOTIFY &lhs,
-            const DSBPOSITIONNOTIFY &rhs) noexcept -> bool
-        { return lhs.dwOffset < rhs.dwOffset; };
-        std::stable_sort(newNots.begin(), newNots.end(), sort_dsbpn);
+        std::ranges::stable_sort(newNots, std::less{}, &DSBPOSITIONNOTIFY::dwOffset);
     }
     newNots.swap(self->mNotifies);
 

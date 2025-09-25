@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <bit>
 #include <chrono>
+#include <format>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -19,7 +21,6 @@
 #include "dsoal.h"
 #include "enumerate.h"
 #include "expected.h"
-#include "fmt/chrono.h"
 #include "guidprinter.h"
 #include "logging.h"
 
@@ -79,7 +80,7 @@ auto GetDSBCapsString(DWORD flags) -> std::string
     {
         if(!ret.empty())
             ret += " | ";
-        ret += fmt::format("{:#x}", flags);
+        std::format_to(std::back_inserter(ret), "{:#x}", flags);
     }
 
     return ret;
@@ -103,7 +104,7 @@ std::optional<DWORD> GetSpeakerConfig(IMMDevice *device)
     HRESULT hr{device->OpenPropertyStore(STGM_READ, ds::out_ptr(ps))};
     if(FAILED(hr))
     {
-        WARN("IMMDevice::OpenPropertyStore failed: {:08x}", as_unsigned(hr));
+        WARN("IMMDevice::OpenPropertyStore failed: {:#x}", as_unsigned(hr));
         return std::nullopt;
     }
 
@@ -113,12 +114,12 @@ std::optional<DWORD> GetSpeakerConfig(IMMDevice *device)
     hr = ps->GetValue(PKEY_AudioEndpoint_PhysicalSpeakers, pv.get());
     if(FAILED(hr))
     {
-        WARN("IPropertyStore::GetValue(PhysicalSpeakers) failed: {:08x}", as_unsigned(hr));
+        WARN("IPropertyStore::GetValue(PhysicalSpeakers) failed: {:#x}", as_unsigned(hr));
         return speakerconf;
     }
     if(pv.type() != VT_UI4 && pv.type() != VT_UINT)
     {
-        WARN("PhysicalSpeakers is not a VT_UI4: 0x{:04x}", pv.type());
+        WARN("PhysicalSpeakers is not a VT_UI4: {:#06x}", pv.type());
         return speakerconf;
     }
 
@@ -142,7 +143,7 @@ std::optional<DWORD> GetSpeakerConfig(IMMDevice *device)
         speakerconf = DSSPEAKER_MONO;
     else
     {
-        FIXME("Unhandled physical speaker layout: 0x{:08x}", phys_speakers);
+        FIXME("Unhandled physical speaker layout: {:#010x}", phys_speakers);
         return speakerconf;
     }
 
@@ -151,14 +152,14 @@ std::optional<DWORD> GetSpeakerConfig(IMMDevice *device)
         pv.clear();
         hr = ps->GetValue(PKEY_AudioEndpoint_FormFactor, pv.get());
         if(FAILED(hr))
-            WARN("IPropertyStore::GetValue(FormFactor) failed: {:08x}", as_unsigned(hr));
+            WARN("IPropertyStore::GetValue(FormFactor) failed: {:#x}", as_unsigned(hr));
         else if(pv.type() != VT_UI4 && pv.type() != VT_UINT)
-            WARN("FormFactor is not a VT_UI4: 0x{:04x}", pv.type());
+            WARN("FormFactor is not a VT_UI4: {:#06x}", pv.type());
         else if(pv.value<UINT>() == Headphones || pv.value<UINT>() == Headset)
             speakerconf = DSSPEAKER_HEADPHONE;
     }
 
-    TRACE("Got config {}:{} from physical speakers 0x{:08x}", DSSPEAKER_GEOMETRY(speakerconf),
+    TRACE("Got config {}:{} from physical speakers {:#010x}", DSSPEAKER_GEOMETRY(speakerconf),
         DSSPEAKER_CONFIG(speakerconf), phys_speakers);
 
     return speakerconf;
@@ -198,7 +199,7 @@ ds::expected<std::unique_ptr<SharedDevice>,HRESULT> CreateDeviceShare(const GUID
     ALCdevicePtr aldev{alcOpenDevice(drv_name.c_str())};
     if(!aldev)
     {
-        WARN("Couldn't open device \"{}\", 0x{:04x}", drv_name, alcGetError(nullptr));
+        WARN("Couldn't open device \"{}\", {:#x}", drv_name, alcGetError(nullptr));
         return ds::unexpected(DSERR_NODRIVER);
     }
 
@@ -218,7 +219,7 @@ ds::expected<std::unique_ptr<SharedDevice>,HRESULT> CreateDeviceShare(const GUID
     ALCcontextPtr alctx{alcCreateContext(aldev.get(), attrs.data())};
     if(!alctx)
     {
-        WARN("Couldn't create context, 0x{:04x}", alcGetError(aldev.get()));
+        WARN("Couldn't create context, {:#x}", alcGetError(aldev.get()));
         return ds::unexpected(DSERR_NODRIVER);
     }
 
@@ -263,27 +264,29 @@ ds::expected<std::unique_ptr<SharedDevice>,HRESULT> CreateDeviceShare(const GUID
         return ds::unexpected(DSERR_NODRIVER);
     }
 
-    ALCint numMono{}, numStereo{};
+    auto numMono = ALCint{};
+    auto numStereo = ALCint{};
     alcGetIntegerv(aldev.get(), ALC_MONO_SOURCES, 1, &numMono);
     alcGetIntegerv(aldev.get(), ALC_STEREO_SOURCES, 1, &numStereo);
     alcGetError(aldev.get());
 
     numMono = std::max(numMono, 0);
     numStereo = std::max(numStereo, 0);
-    const DWORD totalSources{static_cast<DWORD>(numMono) + static_cast<DWORD>(numStereo)};
+    auto const totalSources = ds::saturate_cast<DWORD>(numMono)
+        + ds::saturate_cast<DWORD>(numStereo);
     if(totalSources < 128)
     {
         ERR("Could only allocate {} sources (minimum 128 required)", totalSources);
         return ds::unexpected(DSERR_OUTOFMEMORY);
     }
 
-    const DWORD maxHw{static_cast<DWORD>(totalSources > MaxHwSources*2 ? MaxHwSources : (MaxHwSources/2))};
+    auto const maxHw = (totalSources > MaxHwSources*2) ? MaxHwSources : (MaxHwSources/2);
 
     auto refresh = ALCint{20};
     alcGetIntegerv(aldev.get(), ALC_REFRESH, 1, &refresh);
     alcGetError(aldev.get());
 
-    /* Restrict the update period to between 10ms and 50ms (100hz and 20hz
+    /* Restrict the update period to between 50ms and 10ms (20hz and 100hz
      * update rate).
      */
     refresh = std::clamp(refresh, 20, 100);
@@ -293,7 +296,7 @@ ds::expected<std::unique_ptr<SharedDevice>,HRESULT> CreateDeviceShare(const GUID
     shared->mMaxHwSources = maxHw;
     shared->mMaxSwSources = totalSources - maxHw;
     shared->mExtensions = extensions;
-    shared->mRefresh = static_cast<ALCuint>(refresh);
+    shared->mRefresh = ds::saturate_cast<ALCuint>(refresh);
     shared->mDevice = aldev.release();
     shared->mContext = alctx.release();
 
@@ -310,7 +313,7 @@ std::vector<SharedDevice*> SharedDevice::sDeviceList;
 auto SharedDevice::GetById(const GUID &deviceId) noexcept
     -> ds::expected<ComPtr<SharedDevice>,HRESULT>
 {
-    std::unique_lock listlock{sDeviceListMutex};
+    auto const listlock = std::unique_lock{sDeviceListMutex};
     auto sharediter = std::ranges::find(sDeviceList, deviceId, &SharedDevice::mId);
     if(sharediter != sDeviceList.end())
     {
@@ -337,7 +340,7 @@ SharedDevice::~SharedDevice()
 #define PREFIX CLASS_PREFIX "dispose "
 void SharedDevice::dispose() noexcept
 {
-    std::lock_guard listlock{sDeviceListMutex};
+    auto const listlock = std::lock_guard{sDeviceListMutex};
 
     auto shared_iter = std::ranges::find(sDeviceList, this);
     if(shared_iter != sDeviceList.end())
@@ -384,7 +387,7 @@ DSound8OAL::~DSound8OAL()
         /* Temporarily lock the mutex to ensure we're not between checking
          * mQuitNotify and before waiting on mNotifyCond.
          */
-        { std::unique_lock _{mDsMutex}; }
+        { auto const _ = std::unique_lock{mDsMutex}; }
         mNotifyCond.notify_all();
         mNotifyThread.join();
     }
@@ -393,7 +396,7 @@ DSound8OAL::~DSound8OAL()
 
 ComPtr<Buffer> DSound8OAL::createSecondaryBuffer(IDirectSoundBuffer *original)
 {
-    std::unique_lock lock{mDsMutex};
+    auto const lock = std::lock_guard{mDsMutex};
     BufferSubList *sublist{nullptr};
     /* Find a group with an available buffer. */
     for(auto &group : mSecondaryBuffers)
@@ -749,7 +752,7 @@ HRESULT STDMETHODCALLTYPE DSound8OAL::SetCooperativeLevel(HWND hwnd, DWORD level
         return DSERR_INVALIDPARAM;
     }
 
-    std::lock_guard lock{mDsMutex};
+    auto const lock = std::lock_guard{mDsMutex};
     auto hr = S_OK;
     if(level == DSSCL_WRITEPRIMARY && mPrioLevel != DSSCL_WRITEPRIMARY)
     {
@@ -835,7 +838,7 @@ HRESULT STDMETHODCALLTYPE DSound8OAL::GetSpeakerConfig(DWORD *speakerConfig) noe
 #define PREFIX CLASS_PREFIX "SetSpeakerConfig "
 HRESULT STDMETHODCALLTYPE DSound8OAL::SetSpeakerConfig(DWORD speakerConfig) noexcept
 {
-    TRACE("({})->(0x{:08x})", voidp{this}, speakerConfig);
+    TRACE("({})->({:#010x})", voidp{this}, speakerConfig);
 
     if(!mShared)
     {
@@ -878,9 +881,9 @@ HRESULT STDMETHODCALLTYPE DSound8OAL::Initialize(const GUID *deviceId) noexcept
     else if(*deviceId == DSDEVID_DefaultCapture || *deviceId == DSDEVID_DefaultVoiceCapture)
         return DSERR_NODRIVER;
 
-    GUID devid{};
-    HRESULT hr{GetDeviceID(*deviceId, devid)};
-    if(FAILED(hr)) return hr;
+    auto devid = GUID{};
+    if(auto const hr = GetDeviceID(*deviceId, devid); FAILED(hr))
+        return hr;
 
     auto shared = SharedDevice::GetById(devid);
     if(!shared) return shared.error();
@@ -930,7 +933,7 @@ HRESULT STDMETHODCALLTYPE DSound8OAL::VerifyCertification(DWORD *certified) noex
 
 void DSound8OAL::dispose(Buffer *buffer) noexcept
 {
-    std::lock_guard lock{mDsMutex};
+    auto const lock = std::lock_guard{mDsMutex};
     /* Find the group the given buffer belongs in, then destruct it and mark it
      * as free.
      */
