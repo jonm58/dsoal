@@ -1,8 +1,8 @@
 name: Tagged build
 
-on:
+于:
   push:
-    tags:
+    标签:
       - '*.*.*'
     paths-ignore:
       - '.github/workflows/Untagged.yaml'
@@ -104,7 +104,7 @@ jobs:
         echo "${{env.OpenALSoftCommitDate}}" >>                                                                "DSOAL/Documentation/OpenALSoft-Version.txt"
 
     - name: Upload artifact to GitHub actions
-      uses: actions/upload-artifact@v4.6.2
+      uses: actions/upload-artifact@v6.0.0
       with:
         name: DSOAL_v${{env.DSOALCommitTag}}-${{env.DSOALCommitHashShort}}+OpenALSoft_v${{env.OpenALSoftCommitTag}}-${{env.OpenALSoftCommitHashShort}}-${{matrix.config.name}}
         path: DSOAL/
