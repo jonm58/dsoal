@@ -1,8 +1,8 @@
 name: Tagged build
 
-于:
+on:
   push:
-    标签:
+    tags:
       - '*.*.*'
     paths-ignore:
       - '.github/workflows/Untagged.yaml'
