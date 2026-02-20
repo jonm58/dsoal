@@ -106,7 +106,7 @@ jobs:
 
     outputs:
       DSOALRepo: ${{env.DSOALRepo}}
-      DSOAL分支：${{env.DSOALBranch}}
+      DSOALBranch: ${{env.DSOALBranch}}
       DSOALCommitHash: ${{env.DSOALCommitHash}}
       DSOALCommitHashShort: ${{env.DSOALCommitHashShort}}
       DSOALCommitCount: ${{env.DSOALCommitCount}}
